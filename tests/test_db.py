@@ -75,3 +75,12 @@ def test_backup(db, tmp_path):
     copy = Database(tmp_path / "copy.db")
     assert copy.list_notes()[0]["title"] == "keep me"
     copy.close()
+
+
+def test_pinning_does_not_count_as_edit(db):
+    nid = db.add_note("n")
+    db.conn.execute("UPDATE notes SET updated_at = '2000-01-01T00:00:00' WHERE id = ?", (nid,))
+    db.update_note(nid, pinned=True)
+    assert db.get_note(nid)["updated_at"] == "2000-01-01T00:00:00"
+    db.update_note(nid, body="changed")
+    assert db.get_note(nid)["updated_at"] != "2000-01-01T00:00:00"

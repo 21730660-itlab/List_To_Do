@@ -30,8 +30,13 @@ The app is not code-signed, so Windows SmartScreen may warn on first run: **More
 - Tags, pinning, categories, export to `.txt` / `.md`
 - Toolbar: timestamp, checklist item, code block, divider
 
+**View first, then edit:** clicking a task or a note opens it **read-only**, so nothing changes by
+accident. Press **✎ Edit** (or `Ctrl+E`, or double-click a note's text) to change it, and **✓ Done**
+to go back to viewing. New tasks and notes open straight in edit mode so you can start typing.
+
 **How they are related:** any task can have linked notes and any note can have linked tasks
-(many-to-many). From a task press **+ New linked note**; from a note use **Link a task…** or
+(many-to-many). From a task press **+ New linked note** (this works for a brand-new task too; it is
+saved automatically first); from a note use **Link a task…** or
 **+ Task from note**. Cards show how many links they have and open each other in one click.
 
 **Extras:** a dashboard (open / in-progress / overdue / done-today counters, completion bar,
@@ -39,7 +44,7 @@ priority queue, pinned notes, live clock) and a **Subnet Calculator** that can s
 straight into a note.
 
 ### Keyboard shortcuts
-`Ctrl+N` new task · `Ctrl+Shift+N` new note · `Ctrl+F` search · `Ctrl+1..4` switch page · `Ctrl+S` save in the task editor · `Esc` close dialog
+`Ctrl+N` new task · `Ctrl+Shift+N` new note · `Ctrl+E` edit note ·  `Ctrl+F` search · `Ctrl+1..4` switch page · `Ctrl+S` save in the task editor · `Esc` close dialog
 
 ## Design and storage choices
 

@@ -1,4 +1,5 @@
-"""The To-Do part of the app: task list, filters, quick add and the task editor."""
+"""The To-Do part of the app: task list, filters, quick add, the read-only task view
+and the task editor."""
 
 from __future__ import annotations
 
@@ -62,10 +63,13 @@ class TaskCard(ctk.CTkFrame):
             actions.grid(row=0, column=3, rowspan=2, padx=10)
             ghost_button(actions, STATUS_ACTION[task["status"]], self._advance, width=110,
                          color=STATUS_COLORS[NEXT_STATUS[task["status"]]]).pack(side="left", padx=4)
+            ghost_button(actions, "✎  Edit", lambda: self.app.open_task(self.task["id"]),
+                         width=90).pack(side="left", padx=4)
             ghost_button(actions, "✕", self._delete, width=40, color=COLORS["red"]).pack(side="left", padx=4)
 
+        # Clicking a card shows the task read-only; editing is a deliberate extra step.
         for w in (self, title, meta):
-            w.bind("<Button-1>", lambda e: self.app.open_task(self.task["id"]))
+            w.bind("<Button-1>", lambda e: self.app.view_task(self.task["id"]))
             w.bind("<Enter>", lambda e: self.configure(border_color=COLORS["accent"]))
             w.bind("<Leave>", lambda e: self.configure(border_color=COLORS["border"]))
         title.configure(cursor="hand2")
@@ -297,11 +301,8 @@ class TaskDialog(ctk.CTkToplevel):
 
     def _render_notes(self):
         clear(self.notes_box)
-        if not self.task_id:
-            ctk.CTkLabel(self.notes_box, text="Save the task first, then link or create notes for it.",
-                         text_color=COLORS["faint"], font=font("body")).grid(row=0, column=0, padx=14, pady=14, sticky="w")
-            return
-        linked = self.app.db.notes_for_task(self.task_id)
+        # A brand-new task has no id yet; linking or creating a note saves it first.
+        linked = self.app.db.notes_for_task(self.task_id) if self.task_id else []
         for i, note in enumerate(linked):
             row = ctk.CTkFrame(self.notes_box, fg_color=COLORS["card"], corner_radius=8)
             row.grid(row=i, column=0, sticky="ew", padx=10, pady=(10 if i == 0 else 4, 0))
@@ -324,10 +325,15 @@ class TaskDialog(ctk.CTkToplevel):
 
     def _link_existing(self, choice):
         note_id = self._link_choices.get(choice)
-        if note_id:
-            self.app.db.link(self.task_id, note_id)
-            self._render_notes()
-            self.app.refresh_all()
+        if not note_id:
+            return
+        if not self.task_id and not self._save(close=False):
+            return
+        self.app.db.link(self.task_id, note_id)
+        self.app.toast("Note linked to task", COLORS["purple"])
+        # Re-render after the option menu's own callback has finished.
+        self.after(10, self._render_notes)
+        self.app.refresh_all()
 
     def _unlink(self, note_id):
         self.app.db.unlink(self.task_id, note_id)
@@ -335,19 +341,20 @@ class TaskDialog(ctk.CTkToplevel):
         self.app.refresh_all()
 
     def _new_note(self):
-        if not self._save(close=False):
+        if not self._save(close=False, toast=False):
             return
         task = self.app.db.get_task(self.task_id)
         note_id = self.app.db.add_note(f"Notes: {task['title']}", category=task["category"])
         self.app.db.link(self.task_id, note_id)
         self.destroy()
-        self.app.open_note(note_id)
+        self.app.open_note(note_id, edit=True)
+        self.app.toast("New note linked to task - start typing", COLORS["purple"])
 
     def _open_note(self, note_id):
-        if self._save(close=True):
+        if self._save(close=True, toast=False):
             self.app.open_note(note_id)
 
-    def _save(self, close: bool = True) -> bool:
+    def _save(self, close: bool = True, toast: bool = True) -> bool:
         title = self.title_entry.get().strip()
         if not title:
             self.error.configure(text="Please enter a title.")
@@ -363,16 +370,141 @@ class TaskDialog(ctk.CTkToplevel):
                       status=self.status.get(), due_date=due)
         if self.task_id:
             self.app.db.update_task(self.task_id, **fields)
-            self.app.toast("Task saved")
+            if toast:
+                self.app.toast("Task saved")
         else:
             self.task_id = self.app.db.add_task(**fields)
-            self.app.toast(f"Task created: {title}")
+            if toast:
+                self.app.toast(f"Task created: {title}")
         self.app.refresh_all()
         if close:
             self.destroy()
         else:
             self._render_notes()
         return True
+
+    def _delete(self):
+        self.destroy()
+        self.app.delete_task(self.task_id)
+
+
+class TaskViewDialog(ctk.CTkToplevel):
+    """Read-only view of a task. Changes are only made after pressing Edit."""
+
+    def __init__(self, app, task_id: int):
+        super().__init__(app)
+        self.app, self.task_id = app, task_id
+        self.title("View Task")
+        center_on(self, app, 680, 720)
+        self.minsize(560, 560)
+        self.configure(fg_color=COLORS["panel"])
+        self.transient(app)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        self.body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.body.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
+        self.body.grid_columnconfigure(0, weight=1)
+
+        self.footer = ctk.CTkFrame(self, fg_color="transparent")
+        self.footer.grid(row=1, column=0, sticky="ew", padx=26, pady=(8, 20))
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Control-e>", lambda e: self._edit())
+        self.render()
+        self.after(150, self._grab)
+
+    def _grab(self):
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+        self.focus_force()
+
+    def render(self):
+        task = self.app.db.get_task(self.task_id)
+        if not task:
+            self.destroy()
+            return
+        clear(self.body)
+        clear(self.footer)
+        done = task["status"] == "Done"
+
+        ctk.CTkLabel(self.body, text="◉  VIEW MODE  ·  press Edit to make changes",
+                     font=font("small", "bold"), text_color=COLORS["faint"]).grid(
+            row=0, column=0, sticky="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(self.body, text=task["title"], font=font("h2", "bold", overstrike=done),
+                     text_color=COLORS["faint"] if done else COLORS["text"], anchor="w",
+                     justify="left", wraplength=580).grid(row=1, column=0, sticky="ew", padx=16)
+
+        badges = ctk.CTkFrame(self.body, fg_color="transparent")
+        badges.grid(row=2, column=0, sticky="w", padx=16, pady=(10, 4))
+        Badge(badges, task["category"], CATEGORY_COLORS.get(task["category"], COLORS["muted"])).pack(side="left")
+        Badge(badges, task["priority"], PRIORITY_COLORS.get(task["priority"], COLORS["accent"])).pack(side="left", padx=6)
+        Badge(badges, task["status"], STATUS_COLORS[task["status"]]).pack(side="left")
+
+        info = ctk.CTkFrame(self.body, fg_color=COLORS["input"], corner_radius=10)
+        info.grid(row=3, column=0, sticky="ew", padx=16, pady=12)
+        info.grid_columnconfigure(1, weight=1)
+        due_text, due_color = due_label(task["due_date"], done)
+        rows = [("Due", due_text or "No due date", due_color if due_text else COLORS["faint"]),
+                ("Created", task["created_at"].replace("T", "  "), COLORS["text"])]
+        if task["completed_at"]:
+            rows.append(("Completed", task["completed_at"].replace("T", "  "), COLORS["green"]))
+        for i, (k, v, color) in enumerate(rows):
+            ctk.CTkLabel(info, text=k.upper(), font=font("small", "bold"), text_color=COLORS["muted"]).grid(
+                row=i, column=0, sticky="w", padx=14, pady=6)
+            ctk.CTkLabel(info, text=v, font=font("body", "bold"), text_color=color).grid(
+                row=i, column=1, sticky="w", padx=8)
+
+        self._section("Description", 4)
+        ctk.CTkLabel(self.body, text=task["description"] or "No description.", font=font("body"),
+                     text_color=COLORS["text"] if task["description"] else COLORS["faint"],
+                     anchor="w", justify="left", wraplength=580).grid(row=5, column=0, sticky="ew", padx=16)
+
+        self._section("Linked notes", 6)
+        notes = self.app.db.notes_for_task(self.task_id)
+        box = ctk.CTkFrame(self.body, fg_color=COLORS["input"], corner_radius=10)
+        box.grid(row=7, column=0, sticky="ew", padx=16, pady=(0, 10))
+        box.grid_columnconfigure(0, weight=1)
+        if not notes:
+            ctk.CTkLabel(box, text="No linked notes. Press Edit to add one.", font=font("body"),
+                         text_color=COLORS["faint"]).grid(row=0, column=0, sticky="w", padx=14, pady=14)
+        for i, note in enumerate(notes):
+            row = ctk.CTkFrame(box, fg_color=COLORS["card"], corner_radius=8)
+            row.grid(row=i, column=0, sticky="ew", padx=10, pady=(10 if i == 0 else 4, 10 if i == len(notes) - 1 else 0))
+            row.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(row, text=f"✎  {note['title']}", font=font("body", "bold"),
+                         text_color=COLORS["purple"], anchor="w").grid(row=0, column=0, sticky="ew", padx=12, pady=8)
+            ghost_button(row, "Open", lambda n=note["id"]: self._open_note(n), width=70,
+                         height=30).grid(row=0, column=1, padx=8)
+
+        ghost_button(self.footer, "✕  Delete", self._delete, color=COLORS["red"], width=110,
+                     height=40).pack(side="left")
+        primary_button(self.footer, "✎  Edit  (Ctrl+E)", self._edit, width=160).pack(side="right")
+        ghost_button(self.footer, STATUS_ACTION[task["status"]], self._advance, width=120, height=40,
+                     color=STATUS_COLORS[NEXT_STATUS[task["status"]]]).pack(side="right", padx=10)
+        ghost_button(self.footer, "Close", self.destroy, width=90, height=40).pack(side="right")
+
+    def _section(self, text, row):
+        ctk.CTkLabel(self.body, text=text.upper(), font=font("small", "bold"),
+                     text_color=COLORS["muted"]).grid(row=row, column=0, sticky="w", padx=16, pady=(14, 4))
+
+    def _advance(self):
+        task = self.app.db.get_task(self.task_id)
+        new = NEXT_STATUS[task["status"]]
+        self.app.db.set_task_status(self.task_id, new)
+        self.app.toast(f"{task['title']} → {new}", STATUS_COLORS[new])
+        self.app.refresh_all()
+        self.render()
+
+    def _edit(self):
+        self.destroy()
+        self.app.open_task(self.task_id)
+
+    def _open_note(self, note_id):
+        self.destroy()
+        self.app.open_note(note_id)
 
     def _delete(self):
         self.destroy()

@@ -184,7 +184,8 @@ class Database:
             return
         if "pinned" in fields:
             fields["pinned"] = int(bool(fields["pinned"]))
-        fields["updated_at"] = _now()
+        if set(fields) != {"pinned"}:  # pinning is not an edit of the note itself
+            fields["updated_at"] = _now()
         cols = ", ".join(f"{k} = ?" for k in fields)
         self.conn.execute(f"UPDATE notes SET {cols} WHERE id = ?", (*fields.values(), note_id))
         self.conn.commit()

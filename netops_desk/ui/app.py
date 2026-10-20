@@ -15,12 +15,12 @@ from netops_desk.theme import COLORS
 from netops_desk.ui.dashboard import DashboardPage
 from netops_desk.ui.notes import NotesPage
 from netops_desk.ui.subnet_page import SubnetPage
-from netops_desk.ui.tasks import TaskDialog, TasksPage
+from netops_desk.ui.tasks import TaskDialog, TasksPage, TaskViewDialog
 from netops_desk.ui.widgets import Toast, confirm, font
 
 SHORTCUTS = "SHORTCUTS\n" + "\n".join(f"{k:<14}{v}" for k, v in (
     ("Ctrl+N", "new task"), ("Ctrl+Shift+N", "new note"),
-    ("Ctrl+F", "search"), ("Ctrl+1..4", "switch page")))
+    ("Ctrl+E", "edit note"), ("Ctrl+F", "search"), ("Ctrl+1..4", "switch page")))
 
 NAV = [
     ("dashboard", "◉   Dashboard", "Ctrl+1"),
@@ -153,13 +153,21 @@ class App(ctk.CTk):
             self.pages[self.current].refresh()
 
     def open_task(self, task_id: int | None):
+        """Open the task editor (task_id=None creates a new task)."""
         if self.current == "notes":
             self.pages["notes"].save_now()
-        TaskDialog(self, task_id)
+        return TaskDialog(self, task_id)
 
-    def open_note(self, note_id: int):
+    def view_task(self, task_id: int):
+        """Show a task read-only; it has an Edit button for changes."""
+        if self.current == "notes":
+            self.pages["notes"].save_now()
+        return TaskViewDialog(self, task_id)
+
+    def open_note(self, note_id: int, edit: bool = False):
+        """Show a note on the Notes page, read-only unless edit=True."""
         self.show_page("notes")
-        self.pages["notes"].select(note_id)
+        self.pages["notes"].select(note_id, edit=edit)
 
     def delete_task(self, task_id: int):
         task = self.db.get_task(task_id)
@@ -193,6 +201,7 @@ class App(ctk.CTk):
         self.bind("<Control-n>", lambda e: self.open_task(None))
         self.bind("<Control-N>", lambda e: self._new_note())
         self.bind("<Control-f>", lambda e: self._focus_search())
+        self.bind("<Control-e>", lambda e: self.pages["notes"].toggle_edit() if self.current == "notes" else None)
         for i, (key, _, _) in enumerate(NAV, start=1):
             self.bind(f"<Control-Key-{i}>", lambda e, k=key: self.show_page(k))
 

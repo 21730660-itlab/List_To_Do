@@ -1,5 +1,5 @@
-"""The Notes part of the app: searchable note list, editor with autosave, templates
-and links to tasks."""
+"""The Notes part of the app: searchable note list, a note viewer that switches to an
+editor (with autosave) when you press Edit, templates and links to tasks."""
 
 from __future__ import annotations
 
@@ -59,6 +59,8 @@ class NotesPage(ctk.CTkFrame):
         self.current_id: int | None = None
         self._save_job = None
         self._loading = False
+        self._dirty = False      # unsaved edits exist; only then is the note written
+        self.editing = False     # notes open read-only until Edit is pressed
         self.items: dict[int, NoteItem] = {}
 
         self.grid_columnconfigure(1, weight=1)
@@ -107,21 +109,30 @@ class NotesPage(ctk.CTkFrame):
         ed.grid_columnconfigure(0, weight=1)
         ed.grid_rowconfigure(4, weight=1)
 
-        self.title_entry = ctk.CTkEntry(ed, placeholder_text="Note title", font=font("h2", "bold"),
+        head = ctk.CTkFrame(ed, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=28, pady=(24, 0))
+        head.grid_columnconfigure(0, weight=1)
+        self.title_entry = ctk.CTkEntry(head, placeholder_text="Note title", font=font("h2", "bold"),
                                         fg_color="transparent", border_width=0, height=52,
                                         text_color=COLORS["text"], placeholder_text_color=COLORS["faint"])
-        self.title_entry.grid(row=0, column=0, sticky="ew", padx=28, pady=(24, 0))
+        self.title_entry.grid(row=0, column=0, sticky="ew")
+        self.edit_btn = primary_button(head, "✎  Edit", self.toggle_edit, width=140, height=44)
+        self.edit_btn.grid(row=0, column=1, padx=(12, 0))
         self.title_entry.bind("<KeyRelease>", lambda e: self._schedule_save())
 
         meta = ctk.CTkFrame(ed, fg_color="transparent")
         meta.grid(row=1, column=0, sticky="ew", padx=32, pady=(4, 8))
+        self.mode_lbl = ctk.CTkLabel(meta, text="", font=font("small", "bold"), corner_radius=8,
+                                     fg_color=COLORS["input"], height=30)
+        self.mode_lbl.pack(side="left", padx=(0, 10))
         self.cat_var = ctk.StringVar(value="General")
-        option_menu(meta, CATEGORIES, variable=self.cat_var, width=140,
-                    command=lambda v: self.save_now()).pack(side="left")
-        self.tags_entry = entry(meta, "tags: vlan, cisco, dhcp", width=260)
+        self.cat_menu = option_menu(meta, CATEGORIES, variable=self.cat_var, width=140,
+                                    command=lambda v: self._category_changed())
+        self.cat_menu.pack(side="left")
+        self.tags_entry = entry(meta, "tags: vlan, cisco", width=170)
         self.tags_entry.pack(side="left", padx=10)
         self.tags_entry.bind("<KeyRelease>", lambda e: self._schedule_save())
-        self.pin_btn = ghost_button(meta, "☆  Pin", self._toggle_pin, width=90)
+        self.pin_btn = ghost_button(meta, "☆  Pin", self._toggle_pin, width=80)
         self.pin_btn.pack(side="left")
         ghost_button(meta, "✕", self.delete_current, color=COLORS["red"], width=44).pack(side="right")
         ghost_button(meta, "⇩  Export", self._export, width=100).pack(side="right", padx=8)
@@ -130,7 +141,7 @@ class NotesPage(ctk.CTkFrame):
         self.links = ctk.CTkFrame(ed, fg_color=COLORS["panel"], corner_radius=12)
         self.links.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 10))
 
-        tools = ctk.CTkFrame(ed, fg_color="transparent")
+        self.tools = tools = ctk.CTkFrame(ed, fg_color="transparent")
         tools.grid(row=3, column=0, sticky="ew", padx=28, pady=(0, 6))
         for text, fn in (("◷  Timestamp", self._ins_time), ("☐  Checklist", lambda: self._ins("[ ] ")),
                          ("{ }  Code block", lambda: self._ins("```\n\n```\n")),
@@ -146,6 +157,7 @@ class NotesPage(ctk.CTkFrame):
                                    corner_radius=12, wrap="word", undo=True, text_color=COLORS["text"])
         self.body.grid(row=4, column=0, sticky="nsew", padx=28)
         self.body.bind("<KeyRelease>", lambda e: self._schedule_save())
+        self.body.bind("<Double-Button-1>", lambda e: None if self.editing else self.toggle_edit())
 
         self.status_lbl = ctk.CTkLabel(ed, text="", font=font("small"), text_color=COLORS["faint"])
         self.status_lbl.grid(row=5, column=0, sticky="e", padx=32, pady=(6, 16))
@@ -200,12 +212,14 @@ class NotesPage(ctk.CTkFrame):
         self.search.focus_set()
 
     # ----------------------------------------------------------------- editor
-    def select(self, note_id: int):
+    def select(self, note_id: int, edit: bool = False):
+        """Show a note. It opens read-only unless ``edit`` is True."""
         self.save_now()
         note = self.app.db.get_note(note_id)
         if not note:
             return
         self.current_id = note_id
+        self._set_inputs_state("normal")  # disabled widgets cannot be filled
         self._loading = True
         self.title_entry.delete(0, "end")
         self.title_entry.insert(0, note["title"])
@@ -216,19 +230,61 @@ class NotesPage(ctk.CTkFrame):
         self.body.insert("1.0", note["body"])
         self.body.edit_reset()
         self._loading = False
+        self._dirty = False
         self._update_pin(note["pinned"])
-        self.status_lbl.configure(text=f"Last edited {relative_time(note['updated_at'])}  ·  "
-                                       f"{self._word_count()} words")
         self._show_editor(True)
+        self.set_mode(edit)
         self.refresh_list()
+
+    # ------------------------------------------------------------ view / edit
+    def _set_inputs_state(self, state: str):
+        for w in (self.title_entry, self.tags_entry, self.cat_menu, self.body):
+            w.configure(state=state)
+
+    def set_mode(self, editing: bool):
+        self.editing = editing
+        self._set_inputs_state("normal" if editing else "disabled")
+        if editing:
+            self.tools.grid()
+            self.body.configure(border_color=COLORS["accent"])
+            self.title_entry.configure(border_width=1, border_color=COLORS["border"])
+            self.mode_lbl.configure(text="  ✎ EDITING  ", text_color=COLORS["amber"])
+            self.edit_btn.configure(text="✓  Done", fg_color=COLORS["green"], hover_color="#00B880")
+            self.status_lbl.configure(text="Editing - changes save automatically", text_color=COLORS["amber"])
+        else:
+            self.tools.grid_remove()
+            self.body.configure(border_color=COLORS["border"])
+            self.title_entry.configure(border_width=0)
+            self.mode_lbl.configure(text="  ◉ VIEW  ", text_color=COLORS["accent"])
+            self.edit_btn.configure(text="✎  Edit", fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"])
+            note = self.app.db.get_note(self.current_id) if self.current_id else None
+            if note:
+                self.status_lbl.configure(
+                    text=f"Last edited {relative_time(note['updated_at'])}  ·  {self._word_count()} words"
+                         "  ·  press Edit or double-click the text to change it",
+                    text_color=COLORS["faint"])
         self._render_links()
+
+    def toggle_edit(self):
+        if self.current_id is None:
+            return
+        if self.editing:
+            changed = self._dirty
+            self.save_now()
+            self.set_mode(False)
+            self.refresh_list()
+            if changed:
+                self.app.toast("Note saved")
+        else:
+            self.set_mode(True)
+            self.body.focus_set()
 
     def new_note(self, title: str = "Untitled note", body: str = "", category: str = "General",
                  tags: str = ""):
         self.save_now()
         note_id = self.app.db.add_note(title, body, category, tags)
         self.app.refresh_sidebar()
-        self.select(note_id)
+        self.select(note_id, edit=True)
         self.title_entry.focus_set()
         self.title_entry.select_range(0, "end")
 
@@ -239,8 +295,9 @@ class NotesPage(ctk.CTkFrame):
             self.app.toast(f"New note from template: {name}")
 
     def _schedule_save(self):
-        if self._loading or self.current_id is None:
+        if self._loading or self.current_id is None or not self.editing:
             return
+        self._dirty = True
         self.status_lbl.configure(text="Editing…", text_color=COLORS["amber"])
         if self._save_job:
             self.after_cancel(self._save_job)
@@ -250,8 +307,9 @@ class NotesPage(ctk.CTkFrame):
         if self._save_job:
             self.after_cancel(self._save_job)
             self._save_job = None
-        if self.current_id is None or not self.app.db.get_note(self.current_id):
+        if not self._dirty or self.current_id is None or not self.app.db.get_note(self.current_id):
             return
+        self._dirty = False
         title = self.title_entry.get().strip() or "Untitled note"
         body = self.body.get("1.0", "end-1c")
         self.app.db.update_note(self.current_id, title=title, body=body, category=self.cat_var.get(),
@@ -261,6 +319,10 @@ class NotesPage(ctk.CTkFrame):
             item.update_text(title, body)
         self.status_lbl.configure(text=f"✓ Saved {datetime.now():%H:%M:%S}  ·  {self._word_count()} words",
                                   text_color=COLORS["green"])
+
+    def _category_changed(self):
+        self._dirty = True
+        self.save_now()
 
     def _word_count(self) -> int:
         return len(self.body.get("1.0", "end-1c").split())
@@ -321,11 +383,13 @@ class NotesPage(ctk.CTkFrame):
             ctk.CTkButton(self.links, text=label, height=30, width=10, fg_color=COLORS["card"],
                           hover_color=COLORS["card_hover"], text_color=color, corner_radius=8,
                           font=font("small", "bold"),
-                          command=lambda t=task["id"]: self.app.open_task(t)).pack(side="left", padx=3)
+                          command=lambda t=task["id"]: self.app.view_task(t)).pack(side="left", padx=3)
         if len(linked) > 4:
             ctk.CTkLabel(self.links, text=f"+{len(linked) - 4}", text_color=COLORS["muted"],
                          font=font("small")).pack(side="left", padx=4)
 
+        if not self.editing:
+            return
         ghost_button(self.links, "+ Task from note", self._task_from_note, width=10,
                      height=30).pack(side="right", padx=(4, 10), pady=8)
         linked_ids = {t["id"] for t in linked}
@@ -340,7 +404,7 @@ class NotesPage(ctk.CTkFrame):
         if task_id:
             self.app.db.link(task_id, self.current_id)
             self.app.toast("Task linked to note", COLORS["purple"])
-            self._render_links()
+            self.after(10, self._render_links)
             self.refresh_list()
 
     def _task_from_note(self):

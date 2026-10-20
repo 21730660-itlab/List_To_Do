@@ -65,8 +65,24 @@ def selftest() -> int:
         for page in ("tasks", "notes", "subnet", "dashboard"):
             app.show_page(page)
             app.update()
+        notes = app.pages["notes"]
         note = db.list_notes()[0]
         app.open_note(note["id"])
+        assert not notes.editing, "notes must open read-only"
+        before = db.get_note(note["id"])["updated_at"]
+        app.open_note(db.list_notes()[1]["id"])
+        assert db.get_note(note["id"])["updated_at"] == before, "viewing must not modify a note"
+        notes.toggle_edit()
+        assert notes.editing
+        notes.body.insert("end", "\nselftest")
+        notes._schedule_save()
+        notes.toggle_edit()
+        assert not notes.editing and db.get_note(notes.current_id)["body"].endswith("selftest")
+        notes.new_note()
+        assert notes.editing, "a new note must open ready to type"
+        task_id = db.list_tasks()[0]["id"]
+        app.view_task(task_id).destroy()
+        app.open_task(None).destroy()
         app.pages["subnet"].cidr.insert(0, "10.0.0.1/24")
         app.pages["subnet"].calculate()
         app.update()
